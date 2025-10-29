@@ -44,6 +44,8 @@ async function fetchWorkflowsFromDB(workspaceId?: string): Promise<void> {
     if (!response.ok) {
       if (response.status === 401) {
         logger.warn('User not authenticated for workflow fetch')
+        // Mark initial load as complete to prevent infinite waiting
+        hasInitiallyLoaded = true
         useWorkflowRegistry.setState({ workflows: {}, isLoading: false })
         return
       }

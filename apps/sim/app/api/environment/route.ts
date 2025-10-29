@@ -5,6 +5,7 @@ import { type NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { getSession } from '@/lib/auth'
 import { createLogger } from '@/lib/logs/console/logger'
+import { getStandaloneUser, isStandaloneModeEnabled } from '@/lib/standalone'
 import { decryptSecret, encryptSecret, generateRequestId } from '@/lib/utils'
 import type { EnvironmentVariable } from '@/stores/settings/environment/types'
 
@@ -18,10 +19,21 @@ export async function POST(req: NextRequest) {
   const requestId = generateRequestId()
 
   try {
-    const session = await getSession()
-    if (!session?.user?.id) {
-      logger.warn(`[${requestId}] Unauthorized environment variables update attempt`)
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    // Check standalone mode first
+    let userId: string
+    if (isStandaloneModeEnabled()) {
+      const standaloneUser = await getStandaloneUser()
+      if (!standaloneUser) {
+        return NextResponse.json({ error: 'Standalone user not initialized' }, { status: 500 })
+      }
+      userId = standaloneUser.id
+    } else {
+      const session = await getSession()
+      if (!session?.user?.id) {
+        logger.warn(`[${requestId}] Unauthorized environment variables update attempt`)
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      }
+      userId = session.user.id
     }
 
     const body = await req.json()
@@ -40,7 +52,7 @@ export async function POST(req: NextRequest) {
         .insert(environment)
         .values({
           id: crypto.randomUUID(),
-          userId: session.user.id,
+          userId: userId,
           variables: encryptedVariables,
           updatedAt: new Date(),
         })
@@ -75,6 +87,17 @@ export async function GET(request: Request) {
   const requestId = generateRequestId()
 
   try {
+    // Check standalone mode first
+    if (isStandaloneModeEnabled()) {
+      const standaloneUser = await getStandaloneUser()
+      if (!standaloneUser) {
+        return NextResponse.json({ error: 'Standalone user not initialized' }, { status: 500 })
+      }
+
+      // In standalone mode, return empty environment variables for now
+      return NextResponse.json({ data: {} }, { status: 200 })
+    }
+
     const session = await getSession()
     if (!session?.user?.id) {
       logger.warn(`[${requestId}] Unauthorized environment variables access attempt`)
