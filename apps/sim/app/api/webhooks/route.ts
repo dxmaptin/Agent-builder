@@ -6,6 +6,7 @@ import { type NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { createLogger } from '@/lib/logs/console/logger'
 import { getUserEntityPermissions } from '@/lib/permissions/utils'
+import { getStandaloneUser, isStandaloneModeEnabled } from '@/lib/standalone'
 import { getBaseUrl } from '@/lib/urls/utils'
 import { generateRequestId } from '@/lib/utils'
 import { getOAuthToken } from '@/app/api/auth/oauth/utils'
@@ -19,16 +20,84 @@ export async function GET(request: NextRequest) {
   const requestId = generateRequestId()
 
   try {
+    // Get query parameters
+    const { searchParams } = new URL(request.url)
+    const workflowId = searchParams.get('workflowId')
+    const blockId = searchParams.get('blockId')
+
+    // Check standalone mode first
+    if (isStandaloneModeEnabled()) {
+      const standaloneUser = await getStandaloneUser()
+      if (!standaloneUser) {
+        return NextResponse.json({ error: 'Standalone user not initialized' }, { status: 500 })
+      }
+
+      if (workflowId && blockId) {
+        // Fetch workflow to verify access
+        const wf = await db
+          .select({ id: workflow.id, userId: workflow.userId, workspaceId: workflow.workspaceId })
+          .from(workflow)
+          .where(eq(workflow.id, workflowId))
+          .limit(1)
+
+        if (!wf.length) {
+          logger.warn(`[${requestId}] Workflow not found: ${workflowId}`)
+          return NextResponse.json({ error: 'Workflow not found' }, { status: 404 })
+        }
+
+        const wfRecord = wf[0]
+        // In standalone mode, verify workspace
+        if (wfRecord.workspaceId && wfRecord.workspaceId !== standaloneUser.workspaceId) {
+          return NextResponse.json({ webhooks: [] }, { status: 200 })
+        }
+
+        // Skip permission checks in standalone mode
+        const webhooks = await db
+          .select({
+            webhook: webhook,
+            workflow: {
+              id: workflow.id,
+              name: workflow.name,
+            },
+          })
+          .from(webhook)
+          .innerJoin(workflow, eq(webhook.workflowId, workflow.id))
+          .where(and(eq(webhook.workflowId, workflowId), eq(webhook.blockId, blockId)))
+          .orderBy(desc(webhook.updatedAt))
+
+        logger.info(
+          `[${requestId}] Retrieved ${webhooks.length} webhooks for workflow ${workflowId} block ${blockId}`
+        )
+        return NextResponse.json({ webhooks }, { status: 200 })
+      }
+
+      if (workflowId && !blockId) {
+        return NextResponse.json({ webhooks: [] }, { status: 200 })
+      }
+
+      // Default: list webhooks owned by the standalone user
+      logger.debug(`[${requestId}] Fetching standalone user webhooks for ${standaloneUser.id}`)
+      const webhooks = await db
+        .select({
+          webhook: webhook,
+          workflow: {
+            id: workflow.id,
+            name: workflow.name,
+          },
+        })
+        .from(webhook)
+        .innerJoin(workflow, eq(webhook.workflowId, workflow.id))
+        .where(eq(workflow.userId, standaloneUser.id))
+
+      logger.info(`[${requestId}] Retrieved ${webhooks.length} standalone user webhooks`)
+      return NextResponse.json({ webhooks }, { status: 200 })
+    }
+
     const session = await getSession()
     if (!session?.user?.id) {
       logger.warn(`[${requestId}] Unauthorized webhooks access attempt`)
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
-
-    // Get query parameters
-    const { searchParams } = new URL(request.url)
-    const workflowId = searchParams.get('workflowId')
-    const blockId = searchParams.get('blockId')
 
     if (workflowId && blockId) {
       // Collaborative-aware path: allow collaborators with read access to view webhooks

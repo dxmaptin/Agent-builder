@@ -1,11 +1,12 @@
 import { db } from '@sim/db'
-import { workflow, workspace } from '@sim/db/schema'
+import { organization, workflow, workspace } from '@sim/db/schema'
 import { eq } from 'drizzle-orm'
 import { type NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { getSession } from '@/lib/auth'
 import { createLogger } from '@/lib/logs/console/logger'
 import { getUserEntityPermissions } from '@/lib/permissions/utils'
+import { getStandaloneUser, isStandaloneModeEnabled } from '@/lib/standalone'
 import { generateRequestId } from '@/lib/utils'
 import { verifyWorkspaceMembership } from './utils'
 
@@ -27,6 +28,27 @@ export async function GET(request: Request) {
   const workspaceId = url.searchParams.get('workspaceId')
 
   try {
+    // Check standalone mode first
+    if (isStandaloneModeEnabled()) {
+      const standaloneUser = await getStandaloneUser()
+      if (!standaloneUser) {
+        return NextResponse.json({ error: 'Standalone user not initialized' }, { status: 500 })
+      }
+
+      // In standalone mode, verify workspace if provided
+      if (workspaceId && workspaceId !== standaloneUser.workspaceId) {
+        return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
+      }
+
+      // Get workflows for the standalone workspace
+      const workflows = await db
+        .select()
+        .from(workflow)
+        .where(eq(workflow.workspaceId, standaloneUser.workspaceId))
+
+      return NextResponse.json({ data: workflows }, { status: 200 })
+    }
+
     const session = await getSession()
     if (!session?.user?.id) {
       logger.warn(`[${requestId}] Unauthorized workflow access attempt`)
@@ -52,16 +74,19 @@ export async function GET(request: Request) {
         )
       }
 
-      const userRole = await verifyWorkspaceMembership(userId, workspaceId)
+      // Skip workspace membership verification in standalone mode
+      if (!isStandaloneModeEnabled()) {
+        const userRole = await verifyWorkspaceMembership(userId, workspaceId)
 
-      if (!userRole) {
-        logger.warn(
-          `[${requestId}] User ${userId} attempted to access workspace ${workspaceId} without membership`
-        )
-        return NextResponse.json(
-          { error: 'Access denied to this workspace', code: 'WORKSPACE_ACCESS_DENIED' },
-          { status: 403 }
-        )
+        if (!userRole) {
+          logger.warn(
+            `[${requestId}] User ${userId} attempted to access workspace ${workspaceId} without membership`
+          )
+          return NextResponse.json(
+            { error: 'Access denied to this workspace', code: 'WORKSPACE_ACCESS_DENIED' },
+            { status: 403 }
+          )
+        }
       }
     }
 
@@ -84,16 +109,50 @@ export async function GET(request: Request) {
 // POST /api/workflows - Create a new workflow
 export async function POST(req: NextRequest) {
   const requestId = generateRequestId()
-  const session = await getSession()
-
-  if (!session?.user?.id) {
-    logger.warn(`[${requestId}] Unauthorized workflow creation attempt`)
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
 
   try {
     const body = await req.json()
     const { name, description, color, workspaceId, folderId } = CreateWorkflowSchema.parse(body)
+
+    // Check standalone mode first
+    if (isStandaloneModeEnabled()) {
+      const standaloneUser = await getStandaloneUser()
+      if (!standaloneUser) {
+        return NextResponse.json({ error: 'Standalone user not initialized' }, { status: 500 })
+      }
+
+      // In standalone mode, use the standalone workspace
+      const effectiveWorkspaceId = standaloneUser.workspaceId
+      const workflowId = crypto.randomUUID()
+      const now = new Date()
+
+      logger.info(`[${requestId}] Creating workflow ${workflowId} in standalone mode`)
+
+      const [newWorkflow] = await db
+        .insert(workflow)
+        .values({
+          id: workflowId,
+          name,
+          description: description || '',
+          color: color || '#3972F6',
+          userId: standaloneUser.id,
+          workspaceId: effectiveWorkspaceId,
+          folderId: folderId || null,
+          lastSynced: now,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning()
+
+      logger.info(`[${requestId}] Workflow ${workflowId} created successfully in standalone mode`)
+      return NextResponse.json({ data: newWorkflow }, { status: 201 })
+    }
+
+    const session = await getSession()
+    if (!session?.user?.id) {
+      logger.warn(`[${requestId}] Unauthorized workflow creation attempt`)
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
 
     if (workspaceId) {
       const workspacePermission = await getUserEntityPermissions(

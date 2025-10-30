@@ -23,6 +23,30 @@ const DEFAULT_TELEMETRY_CONFIG = {
   },
 }
 
+type TelemetryConfig = typeof DEFAULT_TELEMETRY_CONFIG
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null
+
+const normalizeTelemetryConfig = (config: unknown): TelemetryConfig => {
+  const candidate = (isRecord(config) ? config : {}) as Partial<TelemetryConfig>
+  const serverSide = isRecord(candidate.serverSide) ? candidate.serverSide : {}
+  const batchSettings = isRecord(candidate.batchSettings) ? candidate.batchSettings : {}
+
+  return {
+    ...DEFAULT_TELEMETRY_CONFIG,
+    ...candidate,
+    serverSide: {
+      ...DEFAULT_TELEMETRY_CONFIG.serverSide,
+      ...serverSide,
+    },
+    batchSettings: {
+      ...DEFAULT_TELEMETRY_CONFIG.batchSettings,
+      ...batchSettings,
+    },
+  }
+}
+
 /**
  * Initialize OpenTelemetry SDK with proper configuration
  */
@@ -33,9 +57,9 @@ async function initializeOpenTelemetry() {
       return
     }
 
-    let telemetryConfig
+    let telemetryConfig: TelemetryConfig
     try {
-      telemetryConfig = (await import('./telemetry.config')).default
+      telemetryConfig = normalizeTelemetryConfig((await import('./telemetry.config')).default)
     } catch {
       telemetryConfig = DEFAULT_TELEMETRY_CONFIG
     }
@@ -92,7 +116,7 @@ async function initializeOpenTelemetry() {
       traceExporter: exporter,
     })
 
-    sdk.start()
+    await sdk.start()
 
     const shutdownHandler = async () => {
       try {

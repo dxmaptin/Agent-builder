@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { getSession } from '@/lib/auth'
 import { createLogger } from '@/lib/logs/console/logger'
 import { generateRequestId } from '@/lib/utils'
+import { getStandaloneUser, isStandaloneModeEnabled } from '@/lib/standalone'
 
 const logger = createLogger('LogsAPI')
 
@@ -31,13 +32,27 @@ export async function GET(request: NextRequest) {
   const requestId = generateRequestId()
 
   try {
-    const session = await getSession()
-    if (!session?.user?.id) {
-      logger.warn(`[${requestId}] Unauthorized logs access attempt`)
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
+    // Check standalone mode first
+    let userId: string
+    let isStandalone = false
 
-    const userId = session.user.id
+    if (isStandaloneModeEnabled()) {
+      const standaloneUser = await getStandaloneUser()
+      if (!standaloneUser) {
+        logger.warn(`[${requestId}] Standalone user not initialized`)
+        return NextResponse.json({ error: 'Standalone user not initialized' }, { status: 500 })
+      }
+      userId = standaloneUser.id
+      isStandalone = true
+      logger.info(`[${requestId}] Logs request in standalone mode`, { userId, workspaceId: standaloneUser.workspaceId })
+    } else {
+      const session = await getSession()
+      if (!session?.user?.id) {
+        logger.warn(`[${requestId}] Unauthorized logs access attempt`)
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      }
+      userId = session.user.id
+    }
 
     try {
       const { searchParams } = new URL(request.url)
@@ -94,24 +109,37 @@ export async function GET(request: NextRequest) {
               workflowUpdatedAt: workflow.updatedAt,
             }
 
-      const baseQuery = db
-        .select(selectColumns)
-        .from(workflowExecutionLogs)
-        .innerJoin(
-          workflow,
-          and(
-            eq(workflowExecutionLogs.workflowId, workflow.id),
-            eq(workflow.workspaceId, params.workspaceId)
-          )
-        )
-        .innerJoin(
-          permissions,
-          and(
-            eq(permissions.entityType, 'workspace'),
-            eq(permissions.entityId, workflow.workspaceId),
-            eq(permissions.userId, userId)
-          )
-        )
+      const baseQuery = isStandalone
+        ? // Standalone mode - no permissions check needed
+          db
+            .select(selectColumns)
+            .from(workflowExecutionLogs)
+            .innerJoin(
+              workflow,
+              and(
+                eq(workflowExecutionLogs.workflowId, workflow.id),
+                eq(workflow.workspaceId, params.workspaceId)
+              )
+            )
+        : // Normal mode - with permissions check
+          db
+            .select(selectColumns)
+            .from(workflowExecutionLogs)
+            .innerJoin(
+              workflow,
+              and(
+                eq(workflowExecutionLogs.workflowId, workflow.id),
+                eq(workflow.workspaceId, params.workspaceId)
+              )
+            )
+            .innerJoin(
+              permissions,
+              and(
+                eq(permissions.entityType, 'workspace'),
+                eq(permissions.entityId, workflow.workspaceId),
+                eq(permissions.userId, userId)
+              )
+            )
 
       // Build additional conditions for the query
       let conditions: SQL | undefined
@@ -183,25 +211,37 @@ export async function GET(request: NextRequest) {
         .offset(params.offset)
 
       // Get total count for pagination using the same join structure
-      const countQuery = db
-        .select({ count: sql<number>`count(*)` })
-        .from(workflowExecutionLogs)
-        .innerJoin(
-          workflow,
-          and(
-            eq(workflowExecutionLogs.workflowId, workflow.id),
-            eq(workflow.workspaceId, params.workspaceId)
-          )
-        )
-        .innerJoin(
-          permissions,
-          and(
-            eq(permissions.entityType, 'workspace'),
-            eq(permissions.entityId, workflow.workspaceId),
-            eq(permissions.userId, userId)
-          )
-        )
-        .where(conditions)
+      const countQuery = isStandalone
+        ? db
+            .select({ count: sql<number>`count(*)` })
+            .from(workflowExecutionLogs)
+            .innerJoin(
+              workflow,
+              and(
+                eq(workflowExecutionLogs.workflowId, workflow.id),
+                eq(workflow.workspaceId, params.workspaceId)
+              )
+            )
+            .where(conditions)
+        : db
+            .select({ count: sql<number>`count(*)` })
+            .from(workflowExecutionLogs)
+            .innerJoin(
+              workflow,
+              and(
+                eq(workflowExecutionLogs.workflowId, workflow.id),
+                eq(workflow.workspaceId, params.workspaceId)
+              )
+            )
+            .innerJoin(
+              permissions,
+              and(
+                eq(permissions.entityType, 'workspace'),
+                eq(permissions.entityId, workflow.workspaceId),
+                eq(permissions.userId, userId)
+              )
+            )
+            .where(conditions)
 
       const countResult = await countQuery
 

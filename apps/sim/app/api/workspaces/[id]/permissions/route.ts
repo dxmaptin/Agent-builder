@@ -6,6 +6,7 @@ import { type NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { createLogger } from '@/lib/logs/console/logger'
 import { getUsersWithPermissions, hasWorkspaceAdminAccess } from '@/lib/permissions/utils'
+import { getStandaloneUser, isStandaloneModeEnabled } from '@/lib/standalone'
 
 const logger = createLogger('WorkspacesPermissionsAPI')
 
@@ -30,6 +31,33 @@ interface UpdatePermissionsRequest {
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id: workspaceId } = await params
+
+    // Check standalone mode first
+    if (isStandaloneModeEnabled()) {
+      const standaloneUser = await getStandaloneUser()
+      if (!standaloneUser) {
+        return NextResponse.json({ error: 'Standalone user not initialized' }, { status: 500 })
+      }
+
+      // In standalone mode, verify this is the standalone workspace
+      if (workspaceId !== standaloneUser.workspaceId) {
+        return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
+      }
+
+      // Return the standalone user as the only member with admin permissions
+      return NextResponse.json({
+        users: [
+          {
+            id: standaloneUser.id,
+            name: standaloneUser.name,
+            email: standaloneUser.email,
+            permissions: 'admin',
+          },
+        ],
+        total: 1,
+      })
+    }
+
     const session = await getSession()
 
     if (!session?.user?.id) {

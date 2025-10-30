@@ -1,0 +1,41 @@
+#!/usr/bin/expect -f
+
+set timeout 300
+
+# Set the DATABASE_URL environment variable
+set env(DATABASE_URL) "postgresql://postgres.wxtbrpailwudeftuynzp:Xk9%24mP7%23nQ2%40vL5%26wR8%21zT3%5EbN6@aws-1-eu-north-1.pooler.supabase.com:5432/postgres"
+
+# Spawn the drizzle-kit push command
+spawn bun run drizzle-kit push
+
+# Handle interactive prompts - just press enter to accept defaults
+expect {
+    "❯" {
+        send "\r"
+        exp_continue
+    }
+    "create table" {
+        send "\r"
+        exp_continue
+    }
+    "rename table" {
+        send "\r"
+        exp_continue
+    }
+    "Everything is up to date" {
+        puts "\nSuccess! Schema is up to date.\n"
+        exit 0
+    }
+    "Changes applied" {
+        puts "\nSuccess! Changes have been applied.\n"
+        exit 0
+    }
+    timeout {
+        puts "\nTimeout waiting for drizzle-kit push\n"
+        exit 1
+    }
+    eof {
+        puts "\nProcess completed\n"
+        exit 0
+    }
+}

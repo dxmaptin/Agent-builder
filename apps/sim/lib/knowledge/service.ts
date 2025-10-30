@@ -9,6 +9,7 @@ import type {
 } from '@/lib/knowledge/types'
 import { createLogger } from '@/lib/logs/console/logger'
 import { getUserEntityPermissions } from '@/lib/permissions/utils'
+import { isStandaloneModeEnabled } from '@/lib/standalone'
 
 const logger = createLogger('KnowledgeBaseService')
 
@@ -86,7 +87,8 @@ export async function createKnowledgeBase(
   const kbId = randomUUID()
   const now = new Date()
 
-  if (data.workspaceId) {
+  // Skip permission check in standalone mode
+  if (data.workspaceId && !isStandaloneModeEnabled()) {
     const hasPermission = await getUserEntityPermissions(data.userId, 'workspace', data.workspaceId)
     if (hasPermission === null) {
       throw new Error('User does not have permission to create knowledge bases in this workspace')

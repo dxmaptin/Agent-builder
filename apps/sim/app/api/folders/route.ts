@@ -5,22 +5,45 @@ import { type NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { createLogger } from '@/lib/logs/console/logger'
 import { getUserEntityPermissions } from '@/lib/permissions/utils'
+import { getStandaloneUser, isStandaloneModeEnabled } from '@/lib/standalone'
 
 const logger = createLogger('FoldersAPI')
 
 // GET - Fetch folders for a workspace
 export async function GET(request: NextRequest) {
   try {
-    const session = await getSession()
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
-
     const { searchParams } = new URL(request.url)
     const workspaceId = searchParams.get('workspaceId')
 
     if (!workspaceId) {
       return NextResponse.json({ error: 'Workspace ID is required' }, { status: 400 })
+    }
+
+    // Check standalone mode first
+    if (isStandaloneModeEnabled()) {
+      const standaloneUser = await getStandaloneUser()
+      if (!standaloneUser) {
+        return NextResponse.json({ error: 'Standalone user not initialized' }, { status: 500 })
+      }
+
+      // In standalone mode, verify workspace
+      if (workspaceId !== standaloneUser.workspaceId) {
+        return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
+      }
+
+      // Get folders for the standalone workspace
+      const folders = await db
+        .select()
+        .from(workflowFolder)
+        .where(eq(workflowFolder.workspaceId, workspaceId))
+        .orderBy(asc(workflowFolder.sortOrder), asc(workflowFolder.createdAt))
+
+      return NextResponse.json({ folders })
+    }
+
+    const session = await getSession()
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
     // Check if user has workspace permissions
@@ -52,16 +75,45 @@ export async function GET(request: NextRequest) {
 // POST - Create a new folder
 export async function POST(request: NextRequest) {
   try {
-    const session = await getSession()
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
-
     const body = await request.json()
     const { name, workspaceId, parentId, color } = body
 
     if (!name || !workspaceId) {
       return NextResponse.json({ error: 'Name and workspace ID are required' }, { status: 400 })
+    }
+
+    // Check standalone mode first
+    if (isStandaloneModeEnabled()) {
+      const standaloneUser = await getStandaloneUser()
+      if (!standaloneUser) {
+        return NextResponse.json({ error: 'Standalone user not initialized' }, { status: 500 })
+      }
+
+      // In standalone mode, verify workspace
+      if (workspaceId !== standaloneUser.workspaceId) {
+        return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
+      }
+
+      // Create folder in standalone mode
+      const folderId = crypto.randomUUID()
+      const newFolder = await db
+        .insert(workflowFolder)
+        .values({
+          id: folderId,
+          name,
+          userId: standaloneUser.id,
+          workspaceId,
+          parentId: parentId || null,
+          color: color || '#6B7280',
+        })
+        .returning()
+
+      return NextResponse.json({ folder: newFolder[0] }, { status: 201 })
+    }
+
+    const session = await getSession()
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
     // Check if user has workspace permissions (at least 'write' access to create folders)

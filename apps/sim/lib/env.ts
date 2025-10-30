@@ -15,6 +15,12 @@ export const env = createEnv({
   skipValidation: true,
 
   server: {
+    // Standalone Mode Configuration
+    STANDALONE_MODE:                       z.boolean().optional().default(false),  // Enable standalone mode (no authentication required)
+    STANDALONE_USER_EMAIL:                 z.string().email().optional().default('admin@localhost'), // Default user email for standalone mode
+    STANDALONE_USER_NAME:                  z.string().optional().default('Admin User'), // Default user name for standalone mode
+    STANDALONE_WORKSPACE_NAME:             z.string().optional().default('Default Workspace'), // Default workspace name for standalone mode
+
     // Core Database & Authentication
     DATABASE_URL:                          z.string().url(),                       // Primary database connection string
     BETTER_AUTH_URL:                       z.string().url(),                       // Base URL for Better Auth service

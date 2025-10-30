@@ -7,11 +7,53 @@ import { createLogger } from '@/lib/logs/console/logger'
 const logger = createLogger('WorkspaceByIdAPI')
 
 import { db } from '@sim/db'
-import { knowledgeBase, permissions, templates, workspace } from '@sim/db/schema'
+import { knowledgeBase, organization, permissions, templates, workspace } from '@sim/db/schema'
 import { getUserEntityPermissions } from '@/lib/permissions/utils'
+import { getStandaloneUser, isStandaloneModeEnabled } from '@/lib/standalone'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
+
+  // Check standalone mode first
+  if (isStandaloneModeEnabled()) {
+    const standaloneUser = await getStandaloneUser()
+    if (!standaloneUser) {
+      return NextResponse.json({ error: 'Standalone user not initialized' }, { status: 500 })
+    }
+
+    const workspaceId = id
+    const url = new URL(request.url)
+    const checkTemplates = url.searchParams.get('check-templates') === 'true'
+
+    // In standalone mode, verify this is the standalone workspace
+    if (workspaceId !== standaloneUser.workspaceId) {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
+    }
+
+    // If checking for published templates
+    if (checkTemplates) {
+      return NextResponse.json({ hasPublishedTemplates: false, publishedTemplates: [] })
+    }
+
+    // Get organization (workspace) details
+    const orgDetails = await db
+      .select()
+      .from(organization)
+      .where(eq(organization.id, workspaceId))
+      .then((rows) => rows[0])
+
+    if (!orgDetails) {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
+    }
+
+    return NextResponse.json({
+      workspace: {
+        ...orgDetails,
+        permissions: 'admin',
+      },
+    })
+  }
+
   const session = await getSession()
 
   if (!session?.user?.id) {
@@ -85,6 +127,56 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
+
+  // Check standalone mode first
+  if (isStandaloneModeEnabled()) {
+    const standaloneUser = await getStandaloneUser()
+    if (!standaloneUser) {
+      return NextResponse.json({ error: 'Standalone user not initialized' }, { status: 500 })
+    }
+
+    const workspaceId = id
+
+    // In standalone mode, verify this is the standalone workspace
+    if (workspaceId !== standaloneUser.workspaceId) {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
+    }
+
+    try {
+      const { name } = await request.json()
+
+      if (!name) {
+        return NextResponse.json({ error: 'Name is required' }, { status: 400 })
+      }
+
+      // Update workspace
+      await db
+        .update(workspace)
+        .set({
+          name,
+          updatedAt: new Date(),
+        })
+        .where(eq(workspace.id, workspaceId))
+
+      // Get updated workspace
+      const updatedWorkspace = await db
+        .select()
+        .from(workspace)
+        .where(eq(workspace.id, workspaceId))
+        .then((rows) => rows[0])
+
+      return NextResponse.json({
+        workspace: {
+          ...updatedWorkspace,
+          permissions: 'admin',
+        },
+      })
+    } catch (error) {
+      logger.error('Error updating workspace in standalone mode:', error)
+      return NextResponse.json({ error: 'Failed to update workspace' }, { status: 500 })
+    }
+  }
+
   const session = await getSession()
 
   if (!session?.user?.id) {

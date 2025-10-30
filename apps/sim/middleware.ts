@@ -1,10 +1,14 @@
 import { getSessionCookie } from 'better-auth/cookies'
 import { type NextRequest, NextResponse } from 'next/server'
+import { env } from './lib/env'
 import { isHosted } from './lib/environment'
 import { createLogger } from './lib/logs/console/logger'
 import { generateRuntimeCSP } from './lib/security/csp'
 
 const logger = createLogger('Middleware')
+
+// Check if standalone mode is enabled
+const isStandaloneMode = env.STANDALONE_MODE || false
 
 const SUSPICIOUS_UA_PATTERNS = [
   /^\s*$/, // Empty user agents
@@ -134,6 +138,33 @@ function handleSecurityFiltering(request: NextRequest): NextResponse | null {
 export async function middleware(request: NextRequest) {
   const url = request.nextUrl
 
+  // STANDALONE MODE: Skip all authentication checks
+  if (isStandaloneMode) {
+    logger.info('Standalone mode enabled - bypassing authentication')
+
+    // Allow direct access to workspace
+    if (url.pathname === '/' || url.pathname === '/homepage') {
+      return NextResponse.redirect(new URL('/workspace', request.url))
+    }
+
+    // Skip login/signup pages entirely
+    if (url.pathname === '/login' || url.pathname === '/signup') {
+      return NextResponse.redirect(new URL('/workspace', request.url))
+    }
+
+    // Allow all other requests through
+    const response = NextResponse.next()
+    if (
+      url.pathname.startsWith('/workspace') ||
+      url.pathname.startsWith('/chat') ||
+      url.pathname === '/'
+    ) {
+      response.headers.set('Content-Security-Policy', generateRuntimeCSP())
+    }
+    return response
+  }
+
+  // NORMAL MODE: Continue with regular authentication flow
   const sessionCookie = getSessionCookie(request)
   const hasActiveSession = !!sessionCookie
 

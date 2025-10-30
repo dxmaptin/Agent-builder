@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { getSession } from '@/lib/auth'
 import { createLogger } from '@/lib/logs/console/logger'
 import { getUserEntityPermissions } from '@/lib/permissions/utils'
+import { getStandaloneUser, isStandaloneModeEnabled } from '@/lib/standalone'
 import {
   type BlockState,
   calculateNextRunTime,
@@ -76,14 +77,81 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    if (!workflowId) {
+      return NextResponse.json({ error: 'Missing workflowId parameter' }, { status: 400 })
+    }
+
+    // Check standalone mode first
+    if (isStandaloneModeEnabled()) {
+      const standaloneUser = await getStandaloneUser()
+      if (!standaloneUser) {
+        return NextResponse.json({ error: 'Standalone user not initialized' }, { status: 500 })
+      }
+
+      // Check if workflow exists and belongs to standalone workspace
+      const [workflowRecord] = await db
+        .select({ userId: workflow.userId, workspaceId: workflow.workspaceId })
+        .from(workflow)
+        .where(eq(workflow.id, workflowId))
+        .limit(1)
+
+      if (!workflowRecord) {
+        return NextResponse.json({ error: 'Workflow not found' }, { status: 404 })
+      }
+
+      // In standalone mode, verify workspace
+      if (workflowRecord.workspaceId && workflowRecord.workspaceId !== standaloneUser.workspaceId) {
+        return NextResponse.json({ error: 'Workflow not found' }, { status: 404 })
+      }
+
+      // Skip permission checks in standalone mode
+      const now = Date.now()
+      const lastLog = recentRequests.get(workflowId) || 0
+      const shouldLog = now - lastLog > LOGGING_THROTTLE_MS
+
+      if (shouldLog) {
+        logger.info(`[${requestId}] Getting schedule for workflow ${workflowId}`)
+        recentRequests.set(workflowId, now)
+      }
+
+      // Build query conditions
+      const conditions = [eq(workflowSchedule.workflowId, workflowId)]
+      if (blockId) {
+        conditions.push(eq(workflowSchedule.blockId, blockId))
+      }
+
+      const schedule = await db
+        .select()
+        .from(workflowSchedule)
+        .where(conditions.length > 1 ? and(...conditions) : conditions[0])
+        .limit(1)
+
+      const headers = new Headers()
+      headers.set('Cache-Control', 'max-age=30') // Cache for 30 seconds
+
+      if (schedule.length === 0) {
+        return NextResponse.json({ schedule: null }, { headers })
+      }
+
+      const scheduleData = schedule[0]
+      const isDisabled = scheduleData.status === 'disabled'
+      const hasFailures = scheduleData.failedCount > 0
+
+      return NextResponse.json(
+        {
+          schedule: scheduleData,
+          isDisabled,
+          hasFailures,
+          canBeReactivated: isDisabled,
+        },
+        { headers }
+      )
+    }
+
     const session = await getSession()
     if (!session?.user?.id) {
       logger.warn(`[${requestId}] Unauthorized schedule query attempt`)
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
-
-    if (!workflowId) {
-      return NextResponse.json({ error: 'Missing workflowId parameter' }, { status: 400 })
     }
 
     // Check if user has permission to view this workflow

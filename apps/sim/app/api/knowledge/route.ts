@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { getSession } from '@/lib/auth'
 import { createKnowledgeBase, getKnowledgeBases } from '@/lib/knowledge/service'
 import { createLogger } from '@/lib/logs/console/logger'
+import { getStandaloneUser, isStandaloneModeEnabled } from '@/lib/standalone'
 import { generateRequestId } from '@/lib/utils'
 
 const logger = createLogger('KnowledgeBaseAPI')
@@ -33,14 +34,30 @@ export async function GET(req: NextRequest) {
   const requestId = generateRequestId()
 
   try {
+    const { searchParams } = new URL(req.url)
+    const workspaceId = searchParams.get('workspaceId')
+
+    // Check standalone mode first
+    if (isStandaloneModeEnabled()) {
+      const standaloneUser = await getStandaloneUser()
+      if (!standaloneUser) {
+        return NextResponse.json({ error: 'Standalone user not initialized' }, { status: 500 })
+      }
+
+      // Get knowledge bases for standalone user
+      const knowledgeBasesWithCounts = await getKnowledgeBases(standaloneUser.id, workspaceId)
+
+      return NextResponse.json({
+        success: true,
+        data: knowledgeBasesWithCounts,
+      })
+    }
+
     const session = await getSession()
     if (!session?.user?.id) {
       logger.warn(`[${requestId}] Unauthorized knowledge base access attempt`)
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
-
-    const { searchParams } = new URL(req.url)
-    const workspaceId = searchParams.get('workspaceId')
 
     const knowledgeBasesWithCounts = await getKnowledgeBases(session.user.id, workspaceId)
 
@@ -58,13 +75,58 @@ export async function POST(req: NextRequest) {
   const requestId = generateRequestId()
 
   try {
+    const body = await req.json()
+
+    // Check standalone mode first
+    if (isStandaloneModeEnabled()) {
+      const standaloneUser = await getStandaloneUser()
+      if (!standaloneUser) {
+        return NextResponse.json({ error: 'Standalone user not initialized' }, { status: 500 })
+      }
+
+      // In standalone mode, verify workspace if provided
+      const { workspaceId } = body
+      if (workspaceId && workspaceId !== standaloneUser.workspaceId) {
+        return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
+      }
+
+      try {
+        const validatedData = CreateKnowledgeBaseSchema.parse(body)
+
+        const createData = {
+          ...validatedData,
+          userId: standaloneUser.id,
+        }
+
+        const newKnowledgeBase = await createKnowledgeBase(createData, requestId)
+
+        logger.info(
+          `[${requestId}] Knowledge base created: ${newKnowledgeBase.id} for standalone user ${standaloneUser.id}`
+        )
+
+        return NextResponse.json({
+          success: true,
+          data: newKnowledgeBase,
+        })
+      } catch (validationError) {
+        if (validationError instanceof z.ZodError) {
+          logger.warn(`[${requestId}] Invalid knowledge base data`, {
+            errors: validationError.errors,
+          })
+          return NextResponse.json(
+            { error: 'Invalid request data', details: validationError.errors },
+            { status: 400 }
+          )
+        }
+        throw validationError
+      }
+    }
+
     const session = await getSession()
     if (!session?.user?.id) {
       logger.warn(`[${requestId}] Unauthorized knowledge base creation attempt`)
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
-
-    const body = await req.json()
 
     try {
       const validatedData = CreateKnowledgeBaseSchema.parse(body)

@@ -1,17 +1,63 @@
 import { db } from '@sim/db'
-import { permissions, workflow, workspace } from '@sim/db/schema'
+import { organization, permissions, workflow, workspace } from '@sim/db/schema'
 import { and, desc, eq, isNull } from 'drizzle-orm'
 import { NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
+import { getStandaloneUser, isStandaloneModeEnabled } from '@/lib/standalone'
 import { createLogger } from '@/lib/logs/console/logger'
 
 const logger = createLogger('Workspaces')
 
 // Get all workspaces for the current user
 export async function GET() {
+  logger.info('GET /api/workspaces called')
+
+  // Check standalone mode first
+  if (isStandaloneModeEnabled()) {
+    logger.info('Standalone mode is enabled')
+    const standaloneUser = await getStandaloneUser()
+
+    if (!standaloneUser) {
+      logger.error('Standalone mode enabled but no standalone user found')
+      return NextResponse.json({ error: 'Standalone user not initialized' }, { status: 500 })
+    }
+
+    logger.info('Using standalone user', { userId: standaloneUser.id, workspaceId: standaloneUser.workspaceId })
+
+    // In standalone mode, return the pre-configured workspace
+    try {
+      const standaloneWorkspace = await db
+        .select()
+        .from(organization)  // Using organization table, not workspace
+        .where(eq(organization.id, standaloneUser.workspaceId))
+        .limit(1)
+
+      if (standaloneWorkspace.length === 0) {
+        logger.error('Standalone workspace not found in database', { workspaceId: standaloneUser.workspaceId })
+        return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
+      }
+
+      logger.info('Returning standalone workspace', { workspace: standaloneWorkspace[0] })
+
+      return NextResponse.json({
+        workspaces: [{
+          ...standaloneWorkspace[0],
+          role: 'owner',
+          permissions: 'admin',
+        }]
+      })
+    } catch (error) {
+      logger.error('Error fetching standalone workspace', { error })
+      return NextResponse.json({ error: 'Failed to fetch workspace' }, { status: 500 })
+    }
+  }
+
+  // Normal authentication flow
   const session = await getSession()
+  logger.info('Session check', { hasSession: !!session, hasUser: !!session?.user })
 
   if (!session?.user?.id) {
+    logger.warn('No session found - unauthorized')
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
@@ -53,9 +99,51 @@ export async function GET() {
 
 // POST /api/workspaces - Create a new workspace
 export async function POST(req: Request) {
+  logger.info('POST /api/workspaces called')
+
+  // Check standalone mode first
+  if (isStandaloneModeEnabled()) {
+    logger.info('Standalone mode is enabled - workspace creation not allowed')
+    const standaloneUser = await getStandaloneUser()
+
+    if (!standaloneUser) {
+      logger.error('Standalone mode enabled but no standalone user found')
+      return NextResponse.json({ error: 'Standalone user not initialized' }, { status: 500 })
+    }
+
+    // In standalone mode, only one workspace is allowed - return existing one
+    try {
+      const standaloneWorkspace = await db
+        .select()
+        .from(organization)  // Using organization table, not workspace
+        .where(eq(organization.id, standaloneUser.workspaceId))
+        .limit(1)
+
+      if (standaloneWorkspace.length === 0) {
+        logger.error('Standalone workspace not found', { workspaceId: standaloneUser.workspaceId })
+        return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
+      }
+
+      logger.info('Returning existing standalone workspace')
+      return NextResponse.json({
+        workspace: {
+          ...standaloneWorkspace[0],
+          role: 'owner',
+          permissions: 'admin',
+        }
+      })
+    } catch (error) {
+      logger.error('Error fetching standalone workspace', { error })
+      return NextResponse.json({ error: 'Failed to fetch workspace' }, { status: 500 })
+    }
+  }
+
+  // Normal authentication flow
   const session = await getSession()
+  logger.info('Session check', { hasSession: !!session, hasUser: !!session?.user })
 
   if (!session?.user?.id) {
+    logger.warn('No session found - unauthorized')
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 

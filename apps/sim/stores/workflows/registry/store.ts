@@ -63,6 +63,13 @@ async function fetchWorkflowsFromDB(workspaceId?: string): Promise<void> {
 
     const { data } = await response.json()
 
+    console.log('[WorkflowRegistry] Fetched workflow data:', {
+      hasData: !!data,
+      isArray: Array.isArray(data),
+      count: data?.length,
+      workspaceId,
+    })
+
     if (!data || !Array.isArray(data)) {
       logger.info('No workflows found in database')
 

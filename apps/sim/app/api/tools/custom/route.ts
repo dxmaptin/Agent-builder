@@ -5,6 +5,7 @@ import { type NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { getSession } from '@/lib/auth'
 import { createLogger } from '@/lib/logs/console/logger'
+import { getStandaloneUser, isStandaloneModeEnabled } from '@/lib/standalone'
 import { generateRequestId } from '@/lib/utils'
 import { getUserId } from '@/app/api/auth/oauth/utils'
 
@@ -39,6 +40,18 @@ export async function GET(request: NextRequest) {
   const workflowId = searchParams.get('workflowId')
 
   try {
+    // Check standalone mode first
+    if (isStandaloneModeEnabled()) {
+      const standaloneUser = await getStandaloneUser()
+      if (!standaloneUser) {
+        return NextResponse.json({ error: 'Standalone user not initialized' }, { status: 500 })
+      }
+
+      // Return custom tools for standalone user
+      const result = await db.select().from(customTools).where(eq(customTools.userId, standaloneUser.id))
+      return NextResponse.json({ data: result }, { status: 200 })
+    }
+
     let userId: string | undefined
 
     // If workflowId is provided, get userId from the workflow

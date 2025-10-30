@@ -8,6 +8,7 @@ import { getSession } from '@/lib/auth'
 import { verifyInternalToken } from '@/lib/auth/internal'
 import { env } from '@/lib/env'
 import { createLogger } from '@/lib/logs/console/logger'
+import { getStandaloneUser, isStandaloneModeEnabled } from '@/lib/standalone'
 import { generateRequestId } from '@/lib/utils'
 import { loadWorkflowFromNormalizedTables } from '@/lib/workflows/db-helpers'
 import { getWorkflowAccessContext, getWorkflowById } from '@/lib/workflows/utils'
@@ -44,6 +45,15 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     if (isInternalCall) {
       logger.info(`[${requestId}] Internal API call for workflow ${workflowId}`)
+    } else if (isStandaloneModeEnabled()) {
+      // Standalone mode - use standalone user
+      const standaloneUser = await getStandaloneUser()
+      if (!standaloneUser) {
+        logger.warn(`[${requestId}] Standalone user not initialized`)
+        return NextResponse.json({ error: 'Standalone user not initialized' }, { status: 500 })
+      }
+      userId = standaloneUser.id
+      logger.info(`[${requestId}] Using standalone user for workflow ${workflowId}`)
     } else {
       const session = await getSession()
       let authenticatedUserId: string | null = session?.user?.id || null
@@ -149,7 +159,26 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
       return NextResponse.json({ data: finalWorkflowData }, { status: 200 })
     }
-    return NextResponse.json({ error: 'Workflow has no normalized data' }, { status: 400 })
+
+    // No normalized data - return empty workflow structure so UI can work
+    logger.info(`[${requestId}] No normalized data for workflow ${workflowId}, returning empty structure`)
+    const emptyWorkflowData = {
+      ...workflowData,
+      state: {
+        deploymentStatuses: {},
+        blocks: {},
+        edges: [],
+        loops: {},
+        parallels: {},
+        lastSaved: Date.now(),
+        isDeployed: workflowData.isDeployed || false,
+        deployedAt: workflowData.deployedAt,
+      },
+    }
+
+    const elapsed = Date.now() - startTime
+    logger.info(`[${requestId}] Successfully fetched workflow ${workflowId} with empty state in ${elapsed}ms`)
+    return NextResponse.json({ data: emptyWorkflowData }, { status: 200 })
   } catch (error: any) {
     const elapsed = Date.now() - startTime
     logger.error(`[${requestId}] Error fetching workflow ${workflowId} after ${elapsed}ms`, error)
@@ -170,13 +199,23 @@ export async function DELETE(
   const { id: workflowId } = await params
 
   try {
-    const session = await getSession()
-    if (!session?.user?.id) {
-      logger.warn(`[${requestId}] Unauthorized deletion attempt for workflow ${workflowId}`)
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
+    let userId: string
 
-    const userId = session.user.id
+    if (isStandaloneModeEnabled()) {
+      const standaloneUser = await getStandaloneUser()
+      if (!standaloneUser) {
+        logger.warn(`[${requestId}] Standalone user not initialized`)
+        return NextResponse.json({ error: 'Standalone user not initialized' }, { status: 500 })
+      }
+      userId = standaloneUser.id
+    } else {
+      const session = await getSession()
+      if (!session?.user?.id) {
+        logger.warn(`[${requestId}] Unauthorized deletion attempt for workflow ${workflowId}`)
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      }
+      userId = session.user.id
+    }
 
     const accessContext = await getWorkflowAccessContext(workflowId, userId)
     const workflowData = accessContext?.workflow || (await getWorkflowById(workflowId))
@@ -302,14 +341,23 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
   const { id: workflowId } = await params
 
   try {
-    // Get the session
-    const session = await getSession()
-    if (!session?.user?.id) {
-      logger.warn(`[${requestId}] Unauthorized update attempt for workflow ${workflowId}`)
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
+    let userId: string
 
-    const userId = session.user.id
+    if (isStandaloneModeEnabled()) {
+      const standaloneUser = await getStandaloneUser()
+      if (!standaloneUser) {
+        logger.warn(`[${requestId}] Standalone user not initialized`)
+        return NextResponse.json({ error: 'Standalone user not initialized' }, { status: 500 })
+      }
+      userId = standaloneUser.id
+    } else {
+      const session = await getSession()
+      if (!session?.user?.id) {
+        logger.warn(`[${requestId}] Unauthorized update attempt for workflow ${workflowId}`)
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      }
+      userId = session.user.id
+    }
 
     // Parse and validate request body
     const body = await request.json()

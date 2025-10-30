@@ -35,11 +35,14 @@
   },
   "dependencies": {
     "@linear/sdk": "40.0.0",
+    "@radix-ui/react-visually-hidden": "1.2.3",
     "@t3-oss/env-nextjs": "0.13.4",
     "cronstrue": "3.3.0",
     "drizzle-orm": "^0.44.5",
+    "lodash": "4.17.21",
     "mongodb": "6.19.0",
-    "postgres": "^3.4.5",
+    "nanoid": "5.1.6",
+    "postgres": "3.4.7",
     "remark-gfm": "4.0.1",
     "socket.io-client": "4.8.1",
     "twilio": "5.9.0"

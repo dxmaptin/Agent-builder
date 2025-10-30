@@ -3,65 +3,68 @@
 import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { LoadingAgent } from '@/components/ui/loading-agent'
-import { useWorkflowRegistry } from '@/stores/workflows/registry/store'
 
 export default function WorkflowsPage() {
   const router = useRouter()
-  const { workflows, isLoading, loadWorkflows, setActiveWorkflow } = useWorkflowRegistry()
-  const [hasInitialized, setHasInitialized] = useState(false)
-
   const params = useParams()
   const workspaceId = params.workspaceId as string
+  const [error, setError] = useState<string | null>(null)
 
-  // Initialize workspace workflows
   useEffect(() => {
-    const initializeWorkspace = async () => {
+    const fetchAndRedirect = async () => {
       try {
-        await loadWorkflows(workspaceId)
-        setHasInitialized(true)
+        console.log('[WorkflowsPage] Fetching workflows for workspace:', workspaceId)
+
+        // Fetch workflows directly from API
+        const response = await fetch(`/api/workflows?workspaceId=${workspaceId}`)
+
+        if (!response.ok) {
+          throw new Error(`Failed to fetch workflows: ${response.statusText}`)
+        }
+
+        const { data } = await response.json()
+
+        console.log('[WorkflowsPage] Received workflow data:', {
+          hasData: !!data,
+          isArray: Array.isArray(data),
+          count: data?.length,
+          workflows: data,
+        })
+
+        if (!data || !Array.isArray(data) || data.length === 0) {
+          console.error('[WorkflowsPage] No workflows found!')
+          setError('No workflows found for this workspace')
+          return
+        }
+
+        // Get first workflow from the list
+        const firstWorkflow = data[0]
+        console.log('[WorkflowsPage] Redirecting to first workflow:', firstWorkflow.id)
+
+        // Redirect to the first workflow
+        router.replace(`/workspace/${workspaceId}/w/${firstWorkflow.id}`)
       } catch (error) {
-        console.error('Failed to load workflows for workspace:', error)
-        setHasInitialized(true) // Still mark as initialized to show error state
+        console.error('[WorkflowsPage] Error fetching workflows:', error)
+        setError(error instanceof Error ? error.message : 'Unknown error')
       }
     }
 
-    if (!hasInitialized) {
-      initializeWorkspace()
-    }
-  }, [workspaceId, loadWorkflows, hasInitialized])
+    // Run the fetch and redirect
+    fetchAndRedirect()
+  }, [workspaceId, router])
 
-  // Handle redirection once workflows are loaded
-  useEffect(() => {
-    // Only proceed if we've initialized and workflows are not loading
-    if (!hasInitialized || isLoading) return
-
-    const workflowIds = Object.keys(workflows)
-
-    // Validate that workflows belong to the current workspace
-    const workspaceWorkflows = workflowIds.filter((id) => {
-      const workflow = workflows[id]
-      return workflow.workspaceId === workspaceId
-    })
-
-    // If we have valid workspace workflows, redirect to the first one
-    if (workspaceWorkflows.length > 0) {
-      // Ensure the workflow is set as active before redirecting
-      // This prevents the empty canvas issue on first login
-      const firstWorkflowId = workspaceWorkflows[0]
-      setActiveWorkflow(firstWorkflowId).then(() => {
-        router.replace(`/workspace/${workspaceId}/w/${firstWorkflowId}`)
-      })
-    }
-  }, [hasInitialized, isLoading, workflows, workspaceId, router, setActiveWorkflow])
-
-  // Always show loading state until redirect happens
-  // There should always be a default workflow, so we never show "no workflows found"
+  // Show loading state or error
   return (
     <div className='flex h-screen items-center justify-center'>
       <div className='text-center'>
         <div className='mx-auto mb-4'>
           <LoadingAgent size='lg' />
         </div>
+        {error && (
+          <p className='text-sm text-red-500 mt-4'>
+            {error}
+          </p>
+        )}
       </div>
     </div>
   )
